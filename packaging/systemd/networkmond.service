@@ -1,0 +1,19 @@
+[Unit]
+Description=networkmond local network connection monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/networkmond
+Restart=always
+RestartSec=2s
+RuntimeDirectory=networkmon
+RuntimeDirectoryMode=0755
+Environment=NETWORKMON_DB=/tmp/networkmon/networkmon.db
+Environment=NETWORKMON_SOCKET=/run/networkmon/networkmond.sock
+Environment=NETWORKMON_INTERVAL=500ms
+Environment=NETWORKMON_RETENTION=24h
+
+[Install]
+WantedBy=multi-user.target
