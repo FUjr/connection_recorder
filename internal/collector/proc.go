@@ -75,6 +75,11 @@ func (c *Collector) Snapshot(now time.Time) ([]Connection, error) {
 			out = append(out, conns...)
 		}
 	}
+	forwardConns, err := c.parseConntrack(now)
+	if err != nil && !errors.Is(err, os.ErrNotExist) && !errors.Is(err, os.ErrPermission) {
+		return nil, err
+	}
+	out = append(out, forwardConns...)
 	return out, nil
 }
 
@@ -217,6 +222,8 @@ func (c *Collector) parseNetFile(path string, ns namespaceInfo, proto string, ip
 			container = ns.Container
 			cgroup = ns.Cgroup
 		}
+		direction := inferDirection(localIP, localPort, remoteIP, remotePort, state)
+		sourceIP, sourcePort, destIP, destPort := endpoints(localIP, localPort, remoteIP, remotePort, direction)
 		conns = append(conns, Connection{
 			ObservedAt: now,
 			Proto:      proto,
@@ -225,18 +232,128 @@ func (c *Collector) parseNetFile(path string, ns namespaceInfo, proto string, ip
 			LocalPort:  localPort,
 			RemoteIP:   remoteIP,
 			RemotePort: remotePort,
+			SourceIP:   sourceIP,
+			SourcePort: sourcePort,
+			DestIP:     destIP,
+			DestPort:   destPort,
 			Inode:      inode,
 			NetNS:      ns.ID,
 			PID:        owner.PID,
 			Process:    owner.Process,
 			Exe:        owner.Exe,
 			UID:        uid,
-			Direction:  inferDirection(localIP, localPort, remoteIP, remotePort, state),
+			Direction:  direction,
 			Cgroup:     cgroup,
 			Container:  container,
 		})
 	}
 	return conns, scanner.Err()
+}
+
+func (c *Collector) parseConntrack(now time.Time) ([]Connection, error) {
+	paths := []string{
+		filepath.Join(c.ProcRoot, "net", "nf_conntrack"),
+		filepath.Join(c.ProcRoot, "net", "ip_conntrack"),
+	}
+	var lastErr error
+	for _, path := range paths {
+		conns, err := c.parseConntrackFile(path, now)
+		if err == nil {
+			return conns, nil
+		}
+		lastErr = err
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission) {
+			continue
+		}
+		return nil, err
+	}
+	return nil, lastErr
+}
+
+func (c *Collector) parseConntrackFile(path string, now time.Time) ([]Connection, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var conns []Connection
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		conn, ok := parseConntrackLine(scanner.Text(), now)
+		if ok {
+			conns = append(conns, conn)
+		}
+	}
+	return conns, scanner.Err()
+}
+
+func parseConntrackLine(line string, now time.Time) (Connection, bool) {
+	fields := strings.Fields(line)
+	if len(fields) < 5 {
+		return Connection{}, false
+	}
+	proto := fields[0]
+	if proto == "ipv4" || proto == "ipv6" {
+		if len(fields) < 6 {
+			return Connection{}, false
+		}
+		proto = fields[2]
+	}
+	if proto != "tcp" && proto != "udp" {
+		return Connection{}, false
+	}
+
+	state := ""
+	values := make(map[string]string)
+	for _, field := range fields {
+		if !strings.Contains(field, "=") {
+			if state == "" && isConntrackState(field) {
+				state = field
+			}
+			continue
+		}
+		parts := strings.SplitN(field, "=", 2)
+		if _, exists := values[parts[0]]; !exists {
+			values[parts[0]] = parts[1]
+		}
+	}
+	if state == "" {
+		state = "TRACKED"
+	}
+
+	src := values["src"]
+	dst := values["dst"]
+	if src == "" || dst == "" {
+		return Connection{}, false
+	}
+	sport, _ := strconv.Atoi(values["sport"])
+	dport, _ := strconv.Atoi(values["dport"])
+	if sport == 0 && dport == 0 {
+		return Connection{}, false
+	}
+
+	return Connection{
+		ObservedAt: now,
+		Proto:      proto,
+		State:      state,
+		LocalIP:    src,
+		LocalPort:  sport,
+		RemoteIP:   dst,
+		RemotePort: dport,
+		SourceIP:   src,
+		SourcePort: sport,
+		DestIP:     dst,
+		DestPort:   dport,
+		Inode:      "conntrack",
+		Direction:  "forward",
+		Process:    "conntrack",
+		NetNS:      "conntrack",
+		Container:  "",
+		Cgroup:     "",
+		PID:        0,
+		UID:        0,
+	}, true
 }
 
 func parseAddr(raw string, ipv6 bool) (string, int, error) {
@@ -384,6 +501,23 @@ func inferDirection(localIP string, localPort int, remoteIP string, remotePort i
 	return "unknown"
 }
 
+func endpoints(localIP string, localPort int, remoteIP string, remotePort int, direction string) (string, int, string, int) {
+	if direction == "inbound" {
+		return remoteIP, remotePort, localIP, localPort
+	}
+	return localIP, localPort, remoteIP, remotePort
+}
+
 func isLikelyEphemeral(port int) bool {
 	return port >= 32768
+}
+
+func isConntrackState(value string) bool {
+	switch value {
+	case "SYN_SENT", "SYN_RECV", "ESTABLISHED", "FIN_WAIT", "CLOSE_WAIT", "LAST_ACK",
+		"TIME_WAIT", "CLOSE", "LISTEN", "UNREPLIED", "ASSURED":
+		return true
+	default:
+		return false
+	}
 }

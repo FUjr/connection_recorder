@@ -19,6 +19,8 @@ type Request struct {
 	PID       int    `json:"pid,omitempty"`
 	Process   string `json:"process,omitempty"`
 	Remote    string `json:"remote,omitempty"`
+	Source    string `json:"source,omitempty"`
+	Dest      string `json:"dest,omitempty"`
 	Container string `json:"container,omitempty"`
 	NetNS     string `json:"netns,omitempty"`
 	Interval  string `json:"interval,omitempty"`
@@ -76,6 +78,8 @@ func ParseQuery(req Request) (store.Query, error) {
 	q.PID = req.PID
 	q.Process = req.Process
 	q.Remote = req.Remote
+	q.Source = req.Source
+	q.Dest = req.Dest
 	q.Container = req.Container
 	q.NetNS = req.NetNS
 	if req.Since != "" {

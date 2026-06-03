@@ -10,6 +10,10 @@ type Connection struct {
 	LocalPort  int
 	RemoteIP   string
 	RemotePort int
+	SourceIP   string
+	SourcePort int
+	DestIP     string
+	DestPort   int
 	Inode      string
 	NetNS      string
 	PID        int

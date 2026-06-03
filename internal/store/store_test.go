@@ -25,6 +25,10 @@ func TestUpsertDeduplicatesConnections(t *testing.T) {
 		LocalPort:  50000,
 		RemoteIP:   "127.0.0.1",
 		RemotePort: 443,
+		SourceIP:   "127.0.0.1",
+		SourcePort: 50000,
+		DestIP:     "127.0.0.1",
+		DestPort:   443,
 		Inode:      "1",
 		NetNS:      "net:[4026531993]",
 		PID:        123,
@@ -53,5 +57,44 @@ func TestUpsertDeduplicatesConnections(t *testing.T) {
 	}
 	if records[0].Container != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
 		t.Fatalf("container = %s", records[0].Container)
+	}
+}
+
+func TestListFiltersSourceAndDest(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "networkmon.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	conn := collector.Connection{
+		ObservedAt: time.Now(),
+		Proto:      "tcp",
+		State:      "ESTABLISHED",
+		LocalIP:    "192.168.1.10",
+		LocalPort:  51000,
+		RemoteIP:   "8.8.8.8",
+		RemotePort: 443,
+		SourceIP:   "192.168.1.10",
+		SourcePort: 51000,
+		DestIP:     "8.8.8.8",
+		DestPort:   443,
+		Inode:      "conntrack",
+		NetNS:      "conntrack",
+		Direction:  "forward",
+		Process:    "conntrack",
+	}
+	if err := st.UpsertConnections(context.Background(), []collector.Connection{conn}); err != nil {
+		t.Fatal(err)
+	}
+	records, err := st.List(context.Background(), Query{Source: "192.168.1.10", Dest: "8.8.8.8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %d", len(records))
+	}
+	if records[0].Direction != "forward" {
+		t.Fatalf("direction = %s", records[0].Direction)
 	}
 }

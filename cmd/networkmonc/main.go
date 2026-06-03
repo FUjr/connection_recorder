@@ -46,7 +46,7 @@ func main() {
 func usage() {
 	fmt.Fprintf(os.Stderr, `Usage:
   networkmonc [--socket PATH] status
-  networkmonc [--socket PATH] list [--since 1h] [--limit 100] [--pid 123] [--process NAME] [--remote IP] [--container ID] [--netns NS] [--json]
+  networkmonc [--socket PATH] list [--since 1h] [--limit 100] [--pid 123] [--process NAME] [--remote IP] [--source IP] [--dest IP] [--container ID] [--netns NS] [--json]
   networkmonc [--socket PATH] config get
   networkmonc [--socket PATH] config set [--interval 500ms] [--retention 24h] [--db /opt/networkmon/networkmon.db]
   networkmonc [--socket PATH] prune
@@ -84,6 +84,8 @@ func list(socket string, args []string) error {
 	pid := fs.Int("pid", 0, "filter by PID")
 	process := fs.String("process", "", "filter by process name")
 	remote := fs.String("remote", "", "filter by remote IP")
+	source := fs.String("source", "", "filter by source IP")
+	dest := fs.String("dest", "", "filter by destination IP")
 	container := fs.String("container", "", "filter by container ID prefix")
 	netns := fs.String("netns", "", "filter by network namespace")
 	jsonOut := fs.Bool("json", false, "print JSON")
@@ -97,6 +99,8 @@ func list(socket string, args []string) error {
 		PID:       *pid,
 		Process:   *process,
 		Remote:    *remote,
+		Source:    *source,
+		Dest:      *dest,
 		Container: *container,
 		NetNS:     *netns,
 	})
@@ -160,7 +164,7 @@ func prune(socket string) error {
 
 func printRecords(records []store.Record) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "LAST_SEEN\tCOUNT\tPROTO\tSTATE\tPID\tPROCESS\tCONTAINER\tLOCAL\tREMOTE\tDIR")
+	fmt.Fprintln(w, "LAST_SEEN\tCOUNT\tPROTO\tSTATE\tPID\tPROCESS\tCONTAINER\tSOURCE\tDEST\tDIR")
 	for _, r := range records {
 		fmt.Fprintf(w, "%s\t%d\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n",
 			r.LastSeen.Format(time.RFC3339),
@@ -170,8 +174,8 @@ func printRecords(records []store.Record) {
 			r.PID,
 			emptyDash(r.Process),
 			shortContainer(r.Container),
-			fmt.Sprintf("%s:%d", r.LocalIP, r.LocalPort),
-			fmt.Sprintf("%s:%d", r.RemoteIP, r.RemotePort),
+			fmt.Sprintf("%s:%d", r.SourceIP, r.SourcePort),
+			fmt.Sprintf("%s:%d", r.DestIP, r.DestPort),
 			r.Direction,
 		)
 	}

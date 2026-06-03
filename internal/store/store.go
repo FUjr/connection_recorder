@@ -26,6 +26,8 @@ type Query struct {
 	PID       int
 	Process   string
 	Remote    string
+	Source    string
+	Dest      string
 	Container string
 	NetNS     string
 }
@@ -41,6 +43,10 @@ type Record struct {
 	LocalPort  int       `json:"local_port"`
 	RemoteIP   string    `json:"remote_ip"`
 	RemotePort int       `json:"remote_port"`
+	SourceIP   string    `json:"source_ip"`
+	SourcePort int       `json:"source_port"`
+	DestIP     string    `json:"dest_ip"`
+	DestPort   int       `json:"dest_port"`
 	Inode      string    `json:"inode"`
 	NetNS      string    `json:"netns"`
 	PID        int       `json:"pid"`
@@ -95,6 +101,10 @@ func (s *Store) init() error {
 			local_port INTEGER NOT NULL,
 			remote_ip TEXT NOT NULL,
 			remote_port INTEGER NOT NULL,
+			source_ip TEXT NOT NULL DEFAULT '',
+			source_port INTEGER NOT NULL DEFAULT 0,
+			dest_ip TEXT NOT NULL DEFAULT '',
+			dest_port INTEGER NOT NULL DEFAULT 0,
 			inode TEXT NOT NULL,
 			netns TEXT NOT NULL DEFAULT '',
 			pid INTEGER NOT NULL,
@@ -108,10 +118,22 @@ func (s *Store) init() error {
 		`ALTER TABLE connections ADD COLUMN netns TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE connections ADD COLUMN cgroup TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE connections ADD COLUMN container_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE connections ADD COLUMN source_ip TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE connections ADD COLUMN source_port INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE connections ADD COLUMN dest_ip TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE connections ADD COLUMN dest_port INTEGER NOT NULL DEFAULT 0`,
+		`UPDATE connections SET
+			source_ip = CASE WHEN direction = 'inbound' THEN remote_ip ELSE local_ip END,
+			source_port = CASE WHEN direction = 'inbound' THEN remote_port ELSE local_port END,
+			dest_ip = CASE WHEN direction = 'inbound' THEN local_ip ELSE remote_ip END,
+			dest_port = CASE WHEN direction = 'inbound' THEN local_port ELSE remote_port END
+			WHERE source_ip = '' AND dest_ip = ''`,
 		`CREATE INDEX IF NOT EXISTS idx_connections_last_seen ON connections(last_seen)`,
 		`CREATE INDEX IF NOT EXISTS idx_connections_pid ON connections(pid)`,
 		`CREATE INDEX IF NOT EXISTS idx_connections_process ON connections(process)`,
 		`CREATE INDEX IF NOT EXISTS idx_connections_remote ON connections(remote_ip, remote_port)`,
+		`CREATE INDEX IF NOT EXISTS idx_connections_source ON connections(source_ip, source_port)`,
+		`CREATE INDEX IF NOT EXISTS idx_connections_dest ON connections(dest_ip, dest_port)`,
 		`CREATE INDEX IF NOT EXISTS idx_connections_container ON connections(container_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_connections_netns ON connections(netns)`,
 	}
@@ -138,12 +160,21 @@ func (s *Store) UpsertConnections(ctx context.Context, conns []collector.Connect
 
 	stmt, err := tx.PrepareContext(ctx, `INSERT INTO connections (
 		fingerprint, first_seen, last_seen, seen_count, proto, state, local_ip, local_port,
-		remote_ip, remote_port, inode, netns, pid, process, exe, uid, direction, cgroup, container_id
-	) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		remote_ip, remote_port, source_ip, source_port, dest_ip, dest_port, inode, netns, pid,
+		process, exe, uid, direction, cgroup, container_id
+	) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(fingerprint) DO UPDATE SET
 		last_seen=excluded.last_seen,
 		seen_count=connections.seen_count + 1,
 		state=excluded.state,
+		local_ip=excluded.local_ip,
+		local_port=excluded.local_port,
+		remote_ip=excluded.remote_ip,
+		remote_port=excluded.remote_port,
+		source_ip=excluded.source_ip,
+		source_port=excluded.source_port,
+		dest_ip=excluded.dest_ip,
+		dest_port=excluded.dest_port,
 		inode=excluded.inode,
 		netns=excluded.netns,
 		process=excluded.process,
@@ -168,6 +199,10 @@ func (s *Store) UpsertConnections(ctx context.Context, conns []collector.Connect
 			conn.LocalPort,
 			conn.RemoteIP,
 			conn.RemotePort,
+			conn.SourceIP,
+			conn.SourcePort,
+			conn.DestIP,
+			conn.DestPort,
 			conn.Inode,
 			conn.NetNS,
 			conn.PID,
@@ -210,6 +245,14 @@ func (s *Store) List(ctx context.Context, q Query) ([]Record, error) {
 		conditions = append(conditions, "(remote_ip = ? OR remote_ip LIKE ?)")
 		args = append(args, q.Remote, "%"+q.Remote+"%")
 	}
+	if q.Source != "" {
+		conditions = append(conditions, "(source_ip = ? OR source_ip LIKE ?)")
+		args = append(args, q.Source, "%"+q.Source+"%")
+	}
+	if q.Dest != "" {
+		conditions = append(conditions, "(dest_ip = ? OR dest_ip LIKE ?)")
+		args = append(args, q.Dest, "%"+q.Dest+"%")
+	}
 	if q.Container != "" {
 		conditions = append(conditions, "container_id LIKE ?")
 		args = append(args, q.Container+"%")
@@ -221,7 +264,7 @@ func (s *Store) List(ctx context.Context, q Query) ([]Record, error) {
 	args = append(args, q.Limit)
 
 	rows, err := s.db.QueryContext(ctx, `SELECT id, first_seen, last_seen, seen_count, proto, state,
-		local_ip, local_port, remote_ip, remote_port, inode, netns, pid, process, exe, uid,
+		local_ip, local_port, remote_ip, remote_port, source_ip, source_port, dest_ip, dest_port, inode, netns, pid, process, exe, uid,
 		direction, cgroup, container_id
 		FROM connections WHERE `+strings.Join(conditions, " AND ")+`
 		ORDER BY last_seen DESC LIMIT ?`, args...)
@@ -235,7 +278,8 @@ func (s *Store) List(ctx context.Context, q Query) ([]Record, error) {
 		var r Record
 		var first, last int64
 		if err := rows.Scan(&r.ID, &first, &last, &r.SeenCount, &r.Proto, &r.State,
-			&r.LocalIP, &r.LocalPort, &r.RemoteIP, &r.RemotePort, &r.Inode, &r.NetNS, &r.PID,
+			&r.LocalIP, &r.LocalPort, &r.RemoteIP, &r.RemotePort, &r.SourceIP, &r.SourcePort,
+			&r.DestIP, &r.DestPort, &r.Inode, &r.NetNS, &r.PID,
 			&r.Process, &r.Exe, &r.UID, &r.Direction, &r.Cgroup, &r.Container); err != nil {
 			return nil, err
 		}
@@ -273,8 +317,9 @@ func (s *Store) Stats(ctx context.Context, dbPath string) (Stats, error) {
 }
 
 func fingerprint(c collector.Connection) string {
-	raw := fmt.Sprintf("%s|%s|%s|%d|%s|%d|%d|%s|%d",
-		c.NetNS, c.Proto, c.LocalIP, c.LocalPort, c.RemoteIP, c.RemotePort, c.PID, c.Exe, c.UID)
+	raw := fmt.Sprintf("%s|%s|%s|%d|%s|%d|%s|%d|%s|%d|%s|%d|%s|%d",
+		c.NetNS, c.Proto, c.LocalIP, c.LocalPort, c.RemoteIP, c.RemotePort,
+		c.SourceIP, c.SourcePort, c.DestIP, c.DestPort, c.Direction, c.PID, c.Exe, c.UID)
 	sum := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(sum[:])
 }

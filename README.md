@@ -1,6 +1,7 @@
 # connection_recorder
 
-`connection_recorder` records local TCP/UDP network connections with the owning process.
+`connection_recorder` records local TCP/UDP network connections with the owning process
+and forwarded conntrack flows.
 It scans network namespaces, so ordinary Docker/Podman bridge-network containers
 are included when `networkmond` runs as root.
 
@@ -33,6 +34,7 @@ sudo ./bin/networkmond
 ./bin/networkmonc status
 ./bin/networkmonc list --since 1h
 ./bin/networkmonc list --remote 1.2.3.4 --json
+./bin/networkmonc list --source 192.168.1.10 --dest 8.8.8.8
 ./bin/networkmonc list --container abc123
 ./bin/networkmonc config set --interval 500ms --retention 24h
 ./bin/networkmonc config set --db /opt/networkmon/networkmon.db
