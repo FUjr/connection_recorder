@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 
 	"github.com/fujr/connection_recorder/internal/collector"
 )
@@ -62,7 +62,7 @@ func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite3", path+"?_busy_timeout=5000&_journal_mode=WAL")
+	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, err
 	}
@@ -80,6 +80,7 @@ func (s *Store) Close() error {
 
 func (s *Store) init() error {
 	stmts := []string{
+		`PRAGMA busy_timeout=5000`,
 		`PRAGMA journal_mode=WAL`,
 		`PRAGMA synchronous=NORMAL`,
 		`CREATE TABLE IF NOT EXISTS connections (
